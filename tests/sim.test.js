@@ -110,3 +110,16 @@ test('derived cycles are reported', () => {
   const { lesson: L } = G.Schema.normalize(raw, {});
   assert.ok(G.Sim.compile(L.sim).issues.some((i) => i.code === 'DERIVED_CYCLE'));
 });
+
+test('fitView keeps one scale for gallery views and stretches plot-like views to fill the box', () => {
+  for (const l of G.gallery) {
+    const v = lesson(l.id).sim.view, W = 673;
+    const H = W * Math.min(1.1, Math.max(0.45, (v.ymax - v.ymin) / (v.xmax - v.xmin)));
+    const g = G.Sim.fitView(v, W, H);
+    assert.equal(g.kx, g.ky, `${l.id} should keep a single scale`);
+  }
+  // t 0..60 by N 0..220, as a live build produced: used to shrink to a ~110px strip in a 673px box.
+  const g = G.Sim.fitView({ xmin: 0, xmax: 60, ymin: 0, ymax: 220 }, 673, 400);
+  assert.ok(Math.abs(g.kx * 60 - 673) < 1e-9 && Math.abs(g.ky * 220 - 400) < 1e-9);
+  assert.equal(g.s, Math.min(g.kx, g.ky));
+});

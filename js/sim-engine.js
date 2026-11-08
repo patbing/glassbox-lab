@@ -289,6 +289,14 @@
       th.surface = cs.getPropertyValue('--surface').trim() || FALLBACK.surface;
       return th;
     }
+    // World-to-pixel fit. Keeps one scale (circles stay round) unless the view is far from the box's shape:
+    // a plot-like view such as t 0..60 by N 0..220 would otherwise shrink to a thin strip, so each axis fills the box.
+    Sim.fitView = function (view, W, H) {
+      var dx = view.xmax - view.xmin, dy = view.ymax - view.ymin, s = Math.min(W / dx, H / dy);
+      var skew = (dy / dx) / (H / W);
+      if (skew > 1.5 || skew < 1 / 1.5) return { s: s, kx: W / dx, ky: H / dy, ox: 0, oy: 0 };
+      return { s: s, kx: s, ky: s, ox: (W - s * dx) / 2, oy: (H - s * dy) / 2 };
+    };
     function nice(raw) { var p = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10)), f = raw / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; }
 
     function setupCanvas(cv, cssW, cssH) {
@@ -459,12 +467,11 @@
         var W = Math.max(200, el.clientWidth || canvas.parentNode.clientWidth || 320);
         var ratio = U.clamp((view.ymax - view.ymin) / (view.xmax - view.xmin), 0.45, 1.1);
         var H = Math.min(W * ratio, Math.max(220, (window.innerHeight || 700) * 0.6));
-        var s = Math.min(W / (view.xmax - view.xmin), H / (view.ymax - view.ymin));
-        geo = { s: s, ox: (W - s * (view.xmax - view.xmin)) / 2, oy: (H - s * (view.ymax - view.ymin)) / 2, w: W, h: H };
+        geo = Sim.fitView(view, W, H); geo.w = W; geo.h = H;
         return setupCanvas(canvas, W, H);
       }
-      function sx(x) { return geo.ox + (x - view.xmin) * geo.s; }
-      function sy(y) { return geo.oy + (view.ymax - y) * geo.s; }
+      function sx(x) { return geo.ox + (x - view.xmin) * geo.kx; }
+      function sy(y) { return geo.oy + (view.ymax - y) * geo.ky; }
 
       function colorOf(tok) { return theme()[tok] || theme().fg; }
 
@@ -478,7 +485,7 @@
           for (var gx = Math.ceil(view.xmin / gs) * gs, gi = 0; gx <= view.xmax && gi < 60; gx += gs, gi++) { ctx.beginPath(); ctx.moveTo(Math.round(sx(gx)) + .5, sy(view.ymax)); ctx.lineTo(Math.round(sx(gx)) + .5, sy(view.ymin)); ctx.stroke(); }
           for (var gy = Math.ceil(view.ymin / gs) * gs, gj = 0; gy <= view.ymax && gj < 60; gy += gs, gj++) { ctx.beginPath(); ctx.moveTo(sx(view.xmin), Math.round(sy(gy)) + .5); ctx.lineTo(sx(view.xmax), Math.round(sy(gy)) + .5); ctx.stroke(); }
         }
-        ctx.save(); ctx.beginPath(); ctx.rect(sx(view.xmin), sy(view.ymax), (view.xmax - view.xmin) * geo.s, (view.ymax - view.ymin) * geo.s); ctx.clip();
+        ctx.save(); ctx.beginPath(); ctx.rect(sx(view.xmin), sy(view.ymax), (view.xmax - view.xmin) * geo.kx, (view.ymax - view.ymin) * geo.ky); ctx.clip();
         model.shapes.forEach(function (cs) {
           var v = Sim.evalShape(cs, env); if (!v || v.bad) return;
           var sh = cs.shape, hl = !!highlightSet[sh.id], col = colorOf(sh.color), lw = v.width !== undefined ? U.clamp(v.width, 1, 8) : 2;
@@ -498,7 +505,7 @@
               if (cs.type === 'arrow') { var a = Math.atan2(y2 - y1, x2 - x1), hs = 8; ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - hs * Math.cos(a - 0.4), y2 - hs * Math.sin(a - 0.4)); ctx.lineTo(x2 - hs * Math.cos(a + 0.4), y2 - hs * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill(); }
               lx = x2 + 6; ly = y2 - 6; break; }
             case 'rect': {
-              var rx = sx(v.x), ry = sy(v.y + v.h), rw = v.w * geo.s, rh = v.h * geo.s;
+              var rx = sx(v.x), ry = sy(v.y + v.h), rw = v.w * geo.kx, rh = v.h * geo.ky;
               halo(function () { ctx.strokeRect(rx, ry, rw, rh); });
               if (sh.fill) ctx.fillRect(rx, ry, rw, rh); else ctx.strokeRect(rx, ry, rw, rh); lx = rx + 4; ly = ry - 5; break; }
             case 'arc':
@@ -549,7 +556,7 @@
         var L = st.list;
         // keep inside box if the box moved
         for (var i = 0; i < L.length; i++) { var p = L[i]; ctx.fillStyle = p.u < frac ? c2 : c1; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), r, 0, 6.2832); ctx.fill(); }
-        if (hl) { ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = colorOf('accent'); ctx.lineWidth = 2; ctx.strokeRect(sx(v.x), sy(v.y + v.h), v.w * geo.s, v.h * geo.s); ctx.restore(); }
+        if (hl) { ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = colorOf('accent'); ctx.lineWidth = 2; ctx.strokeRect(sx(v.x), sy(v.y + v.h), v.w * geo.kx, v.h * geo.ky); ctx.restore(); }
       }
 
       function sampleCharts() {
@@ -680,17 +687,17 @@
       var rt = model.kind === 'static' ? null : Sim.createRuntime(model, model.defaults());
       if (rt) rt.step(1.3, 4000);
       var env = rt ? rt.env : Sim.staticEnv(model, model.defaults());
-      var s = Math.min(W / (view.xmax - view.xmin), H / (view.ymax - view.ymin)), ox = (W - s * (view.xmax - view.xmin)) / 2, oy = (H - s * (view.ymax - view.ymin)) / 2;
-      function X(x) { return ox + (x - view.xmin) * s; } function Y(y) { return oy + (view.ymax - y) * s; }
+      var g = Sim.fitView(view, W, H), s = g.s;
+      function X(x) { return g.ox + (x - view.xmin) * g.kx; } function Y(y) { return g.oy + (view.ymax - y) * g.ky; }
       ctx.fillStyle = th.surface; ctx.fillRect(0, 0, W, H);
-      ctx.save(); ctx.beginPath(); ctx.rect(X(view.xmin), Y(view.ymax), (view.xmax - view.xmin) * s, (view.ymax - view.ymin) * s); ctx.clip();
+      ctx.save(); ctx.beginPath(); ctx.rect(X(view.xmin), Y(view.ymax), (view.xmax - view.xmin) * g.kx, (view.ymax - view.ymin) * g.ky); ctx.clip();
       var rng = U.mulberry32(5);
       model.shapes.forEach(function (cs) {
         var v = Sim.evalShape(cs, env); if (!v || v.bad) return; var sh = cs.shape, col = th[sh.color] || th.fg;
         ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = v.width ? U.clamp(v.width, 1, 6) : 2; ctx.setLineDash(sh.dash ? [5, 4] : []);
         if (cs.type === 'circle') { ctx.beginPath(); ctx.arc(X(v.x), Y(v.y), Math.max(1, v.r * s), 0, 6.2832); sh.fill ? ctx.fill() : ctx.stroke(); }
         else if (cs.type === 'line' || cs.type === 'arrow') { ctx.beginPath(); ctx.moveTo(X(v.x1), Y(v.y1)); ctx.lineTo(X(v.x2), Y(v.y2)); ctx.stroke(); }
-        else if (cs.type === 'rect') { sh.fill ? ctx.fillRect(X(v.x), Y(v.y + v.h), v.w * s, v.h * s) : ctx.strokeRect(X(v.x), Y(v.y + v.h), v.w * s, v.h * s); }
+        else if (cs.type === 'rect') { sh.fill ? ctx.fillRect(X(v.x), Y(v.y + v.h), v.w * g.kx, v.h * g.ky) : ctx.strokeRect(X(v.x), Y(v.y + v.h), v.w * g.kx, v.h * g.ky); }
         else if (cs.type === 'arc') { ctx.beginPath(); ctx.arc(X(v.x), Y(v.y), v.r * s, -v.start, -v.end, true); ctx.stroke(); }
         else if (cs.type === 'spring') { ctx.beginPath(); ctx.moveTo(X(v.x1), Y(v.y1)); ctx.lineTo(X(v.x2), Y(v.y2)); ctx.stroke(); }
         else if (cs.type === 'particles') {
